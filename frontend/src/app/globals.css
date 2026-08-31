@@ -1,0 +1,145 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #FFFFFF;
+  --bg-elevated: #ffffff;
+  --surface-subtle: #F3EFFD;
+  --surface-border: rgba(124, 58, 237, 0.16);
+  --primary: #7C3AED;
+  --primary-hover: #5B21B6;
+  --accent: #5B21B6;
+  --accent-hover: #4C1D95;
+  --success: #059669;
+  --warning: #d97706;
+  --danger: #dc2626;
+  --text-primary: #1A1A1A;
+  --text-muted: #6B7280;
+  --text-faint: #9CA3AF;
+  --ai-glow: rgba(124, 58, 237, 0.10);
+}
+
+.dark {
+  --bg: #0A0A0A;
+  --bg-elevated: #141414;
+  --surface-subtle: #1A1A1A;
+  --surface-border: rgba(255, 255, 255, 0.08);
+  --primary: #8B5CF6;
+  --primary-hover: #A78BFA;
+  --accent: #8B5CF6;
+  --accent-hover: #A78BFA;
+  --success: #34d399;
+  --warning: #fbbf24;
+  --danger: #f87171;
+  --text-primary: #F5F5F5;
+  --text-muted: #A1A1AA;
+  --text-faint: #71717A;
+  --ai-glow: rgba(139, 92, 246, 0.08);
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-primary: var(--primary);
+  --color-accent: var(--accent);
+  --color-text-primary: var(--text-primary);
+  --color-text-muted: var(--text-muted);
+  --font-display: "Lexend", sans-serif;
+  --font-sans: "Inter", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text-primary);
+  font-family: "Inter", sans-serif;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+.card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--surface-border);
+  border-radius: 1rem;
+  transition: border-color 0.2s ease, transform 0.2s ease;
+}
+
+.btn-primary {
+  background: var(--primary);
+  color: white;
+  border-radius: 0.65rem;
+  padding: 0.7rem 1.4rem;
+  font-weight: 600;
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+.btn-primary:hover {
+  background: var(--primary-hover);
+  transform: translateY(-1px);
+}
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.btn-accent {
+  background: var(--accent);
+  color: white;
+  border-radius: 0.65rem;
+  padding: 0.7rem 1.4rem;
+  font-weight: 600;
+  transition: background 0.15s ease;
+}
+.btn-accent:hover {
+  background: var(--accent-hover);
+}
+
+.input-field {
+  background: var(--bg);
+  border: 1px solid var(--surface-border);
+  border-radius: 0.65rem;
+  padding: 0.7rem 1rem;
+  color: var(--text-primary);
+  transition: border-color 0.2s ease;
+  width: 100%;
+}
+.input-field:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
+.status-badge {
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 0.25rem 0.6rem;
+  border-radius: 9999px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+/* Chat-specific: distinct bubble styling for user vs. AI messages */
+.chat-bubble-user {
+  background: var(--primary);
+  color: white;
+  border-radius: 1rem 1rem 0.25rem 1rem;
+}
+
+.chat-bubble-ai {
+  background: var(--surface-subtle);
+  border: 1px solid var(--surface-border);
+  color: var(--text-primary);
+  border-radius: 1rem 1rem 1rem 0.25rem;
+}
+
+.chat-markdown p {
+  margin: 0 0 0.5rem 0;
+}
+.chat-markdown p:last-child {
+  margin-bottom: 0;
+}
+.chat-markdown ul, .chat-markdown ol {
+  margin: 0.25rem 0 0.5rem 1.25rem;
+}
+.chat-markdown li {
+  margin-bottom: 0.15rem;
+}
+.chat-markdown strong {
+  font-weight: 600;
+}
