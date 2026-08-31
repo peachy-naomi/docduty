@@ -3,9 +3,8 @@ FROM python:3.11-slim
 WORKDIR /app
 
 COPY requirements.txt .
-COPY wheels/ ./wheels/
 
-RUN pip install --no-cache-dir --no-index --find-links=./wheels/ torch
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
