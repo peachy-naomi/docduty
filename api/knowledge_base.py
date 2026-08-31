@@ -1,16 +1,24 @@
 import re
-from sentence_transformers import SentenceTransformer
 from database import get_connection
-from pgvector.psycopg2 import register_vector
+
+# Loaded lazily, on first actual use — NOT at import time. This means a
+# plain PDF download, login, or invoice creation never pays the memory
+# cost of loading this model at all, since those code paths never touch
+# embed_text(). Only the first real AI chat/search request loads it,
+# after which it stays cached for the rest of that process's life.
+_model = None
 
 
-# Loaded once at import time — reused across every request, since loading
-# the model itself takes a couple of seconds and shouldn't happen per-call
-_model = SentenceTransformer("all-MiniLM-L6-v2")
+def _get_model():
+    global _model
+    if _model is None:
+        from sentence_transformers import SentenceTransformer
+        _model = SentenceTransformer("all-MiniLM-L6-v2")
+    return _model
 
 
 def embed_text(text: str) -> list[float]:
-    return _model.encode(text).tolist()
+    return _get_model().encode(text).tolist()
 
 
 def chunk_text(text: str, chunk_size: int = 800, overlap: int = 100) -> list[str]:
