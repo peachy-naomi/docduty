@@ -16,12 +16,12 @@ BASE_SYSTEM_PROMPT = """You are DocDuty's AI compliance assistant, helping Niger
 handle invoicing, contracts, and tax/regulatory compliance.
 
 When a conversation starts (the user's first message, e.g. a greeting like "hi" or "hello"),
-do NOT respond with a generic list of capabilities. Instead, ask them to tell you about their
-business first if you don't already know it, OR if their profile is complete, call
-get_compliance_health_score immediately and open with a real, specific status update based on
-what it returns — e.g. "You're at 60% compliance — you have an invoice and a contract on file,
-but no privacy policy yet, and your business profile still needs completing." Be direct and
-grounded in their actual data, not vague.
+do NOT respond with a generic list of capabilities, and do NOT ask whether they already have a
+business profile set up — you already know the answer from context (see below), so asking is
+redundant and just adds friction. If their profile is complete, call get_compliance_health_score
+immediately and open with a real, specific status update based on what it returns — e.g. "You're
+at 60% compliance — you have an invoice and a contract on file, but no privacy policy yet." Be
+direct and grounded in their actual data, not vague.
 
 Rules you must always follow:
 1. Before calling any tool that creates a real document (create_invoice), always summarize
@@ -47,7 +47,12 @@ Rules you must always follow:
 ONBOARDING_ADDENDUM = """
 IMPORTANT: This business has not completed their profile yet. Before helping with anything else,
 you must first collect this information through natural conversation, ONE question at a time —
-never ask more than one thing per message:
+never ask more than one thing per message.
+
+If this is the user's first message in the conversation, open with something direct like:
+"Welcome to DocDuty! Let's set up your business profile so I can give you accurate, personalized
+compliance guidance." Then immediately ask the first question below. Do NOT ask whether they
+already have a profile — you already know they don't, that's why this instruction exists.
 
 1. Legal structure (must be exactly one of: "Business Name (Sole Proprietorship)", "Business Name (Partnership)",
    "Private Limited Company (Ltd)", "Public Limited Company (PLC)", "Limited Liability Partnership (LLP)",
@@ -77,7 +82,22 @@ def load_session_messages(session_id: int) -> list:
     rows = cur.fetchall()
     cur.close()
     conn.close()
-    return [{"role": row["role"], "content": row["content"]} for row in rows]
+
+    messages = [{"role": row["role"], "content": row["content"]} for row in rows]
+
+    # Defensive repair: if the conversation was interrupted mid-tool-call (e.g. a
+    # crash between saving the assistant's tool_use and saving the tool_result),
+    # the last assistant message may contain an unresolved tool_use with no
+    # matching result. Claude's API rejects that outright, so we trim it off
+    # rather than let the whole conversation become permanently unusable.
+    if messages and messages[-1]["role"] == "assistant":
+        last_content = messages[-1]["content"]
+        if isinstance(last_content, list) and any(
+            isinstance(b, dict) and b.get("type") == "tool_use" for b in last_content
+        ):
+            messages = messages[:-1]
+
+    return messages
 
 
 def save_message(session_id: int, role: str, content) -> None:
