@@ -45,7 +45,44 @@ def execute_tool(tool_name: str, tool_input: dict, account: dict, user_id: int) 
     elif tool_name == "get_document_link":
         return get_document_link_internal(tool_input["document_id"], tool_input["document_kind"], account)
 
+    elif tool_name == "present_choice_options":
+        return {"message": "Options presented to user"}
+
+    elif tool_name == "draft_custom_document":
+        return draft_custom_document_internal(account, tool_input)
+
     return {"error": f"Unknown tool: {tool_name}"}
+
+
+def draft_custom_document_internal(account: dict, fields: dict) -> dict:
+    import json
+    from database import get_connection
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM clients WHERE id = %s AND account_id = %s", (fields["client_id"], account["id"]))
+    if not cur.fetchone():
+        cur.close()
+        conn.close()
+        return {"error": "Client not found"}
+
+    cur.execute(
+        """
+        INSERT INTO contracts (account_id, client_id, template_id, field_values, rendered_body, is_ai_generated, review_status)
+        VALUES (%s, %s, NULL, %s, %s, TRUE, 'pending_review') RETURNING id
+        """,
+        (account["id"], fields["client_id"], json.dumps({"title": fields["document_title"]}), fields["drafted_content"]),
+    )
+    contract_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    return {
+        "draft_id": contract_id,
+        "status": "pending_review",
+        "message": "Draft created. This is NOT final. The business owner must review and approve it in the Documents section before it can be used or downloaded.",
+    }
 
 
 def get_document_link_internal(document_id: int, document_kind: str, account: dict) -> dict:
@@ -82,7 +119,7 @@ def save_business_profile_internal(account_id: int, fields: dict) -> dict:
     updates = []
     values = []
 
-    for field_name in ["legal_structure", "business_description", "staff_size_range", "office_status", "state", "monthly_revenue_range", "staff_salary_range"]:
+    for field_name in ["legal_structure", "business_description", "staff_size_range", "office_status", "state", "monthly_revenue_range", "staff_salary_min", "staff_salary_max"]:
         if field_name in fields:
             updates.append(f"{field_name} = %s")
             values.append(fields[field_name])

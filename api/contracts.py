@@ -172,6 +172,73 @@ def create_contract(input: ContractInput, user_id: int = Depends(get_current_use
     return {"message": "Contract generated successfully", "contract_id": contract_id, "template_name": template["name"]}
 
 
+@router.get("/contracts/drafts")
+def list_pending_drafts(user_id: int = Depends(get_current_user_id)):
+    account = get_account_for_user(user_id)
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT c.id, c.field_values, c.rendered_body, c.created_at, cl.business_name as client_name
+        FROM contracts c JOIN clients cl ON cl.id = c.client_id
+        WHERE c.account_id = %s AND c.review_status = 'pending_review'
+        ORDER BY c.created_at DESC
+        """,
+        (account["id"],),
+    )
+    drafts = cur.fetchall()
+    cur.close()
+    conn.close()
+    return {"drafts": drafts}
+
+
+class DraftReviewInput(BaseModel):
+    edited_content: str | None = None
+
+
+@router.put("/contracts/{contract_id}/approve")
+def approve_draft(contract_id: int, input: DraftReviewInput, user_id: int = Depends(get_current_user_id)):
+    account = get_account_for_user(user_id)
+    conn = get_connection()
+    cur = conn.cursor()
+
+    if input.edited_content:
+        cur.execute(
+            "UPDATE contracts SET rendered_body = %s, review_status = 'approved' WHERE id = %s AND account_id = %s RETURNING id",
+            (input.edited_content, contract_id, account["id"]),
+        )
+    else:
+        cur.execute(
+            "UPDATE contracts SET review_status = 'approved' WHERE id = %s AND account_id = %s RETURNING id",
+            (contract_id, account["id"]),
+        )
+    result = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    if not result:
+        raise HTTPException(status_code=404, detail="Draft not found")
+
+    return {"message": "Document approved and ready to use"}
+
+
+@router.delete("/contracts/{contract_id}/reject")
+def reject_draft(contract_id: int, user_id: int = Depends(get_current_user_id)):
+    account = get_account_for_user(user_id)
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM contracts WHERE id = %s AND account_id = %s AND review_status = 'pending_review' RETURNING id", (contract_id, account["id"]))
+    result = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    if not result:
+        raise HTTPException(status_code=404, detail="Draft not found")
+
+    return {"message": "Draft discarded"}
+
 @router.get("/contracts/{contract_id}/pdf")
 def download_contract_pdf(contract_id: int, user_id: int = Depends(get_current_user_id)):
     account = get_account_for_user(user_id)
@@ -180,8 +247,9 @@ def download_contract_pdf(contract_id: int, user_id: int = Depends(get_current_u
     cur = conn.cursor()
     cur.execute(
         """
-        SELECT c.id, c.rendered_body, ct.name as template_name
-        FROM contracts c JOIN contract_templates ct ON ct.id = c.template_id
+        SELECT c.id, c.rendered_body, c.review_status, c.field_values,
+               COALESCE(ct.name, 'Custom Document') as template_name
+        FROM contracts c LEFT JOIN contract_templates ct ON ct.id = c.template_id
         WHERE c.id = %s AND c.account_id = %s
         """,
         (contract_id, account["id"]),
@@ -189,6 +257,12 @@ def download_contract_pdf(contract_id: int, user_id: int = Depends(get_current_u
     contract = cur.fetchone()
     cur.close()
     conn.close()
+
+    if contract and contract["review_status"] == "pending_review":
+        raise HTTPException(
+            status_code=403,
+            detail="This document is a draft awaiting your review and approval before it can be downloaded.",
+        )
 
     if not contract:
         raise HTTPException(status_code=404, detail="Contract not found")

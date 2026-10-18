@@ -3,76 +3,67 @@ import json
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from anthropic import Anthropic
+from anthropic import Anthropic, APIConnectionError
 from database import get_connection
 from dependencies import get_current_user_id
 from account_utils import get_account_for_user
+from subscription_utils import enforce_chat_limit
 from ai_tools import TOOLS
 from ai_tool_executor import execute_tool
+from prompts import BASE_SYSTEM_PROMPT, ONBOARDING_ADDENDUM
 
 router = APIRouter()
 
-BASE_SYSTEM_PROMPT = """You are DocDuty's AI compliance assistant, helping Nigerian small business owners
-handle invoicing, contracts, and tax/regulatory compliance.
+MODEL = "claude-haiku-4-5-20251001"
 
-When a conversation starts (the user's first message, e.g. a greeting like "hi" or "hello"),
-do NOT respond with a generic list of capabilities, and do NOT ask whether they already have a
-business profile set up — you already know the answer from context (see below), so asking is
-redundant and just adds friction. If their profile is complete, call get_compliance_health_score
-immediately and open with a real, specific status update based on what it returns — e.g. "You're
-at 60% compliance — you have an invoice and a contract on file, but no privacy policy yet." Be
-direct and grounded in their actual data, not vague.
 
-Rules you must always follow:
-1. Before calling any tool that creates a real document (create_invoice), always summarize
-   exactly what you're about to create and ask the user to confirm first. Never create a
-   document from an ambiguous or ungathered request. CRITICAL: before showing any VAT figure
-   in this summary, you MUST call calculate_vat to get the actual current rate and amount —
-   never estimate or recall VAT from general knowledge, since the real system rate may differ
-   from what you'd otherwise guess. The confirmation summary must always match what the
-   invoice will actually show.
-2. For ANY question about business regulations, licenses, or legal requirements, ALWAYS call
-   search_compliance_knowledge first before answering. Base your answer on what it returns.
-   If it returns found: false, tell the user honestly that DocDuty doesn't have verified
-   information on that topic yet, rather than answering from general knowledge — the whole
-   point of this tool is to ground answers in actually-sourced regulatory data, not guesses.
-3. When you do answer a compliance question, cite which source/agency the information came
-   from (provided in the tool result), and always note that you are not a substitute for a
-   licensed accountant or lawyer for anything with real financial or legal consequences.
-4. If you need a client_id and the user only gave a business name, call list_clients first
-   to find the matching client before proceeding.
-5. Be concise and practical — business owners want clear answers, not long essays.
-"""
+def repair_history(messages: list) -> list:
+    """
+    Claude's API requires every assistant tool_use to be answered by a tool_result in the
+    very next user message. A crash between those two writes leaves an orphaned tool_use
+    that would break every later request in the session. This drops any orphaned
+    tool_use turn anywhere in the history, plus any tool_result with no matching tool_use.
+    """
+    cleaned = []
+    i = 0
+    n = len(messages)
+    while i < n:
+        msg = messages[i]
+        content = msg["content"]
 
-ONBOARDING_ADDENDUM = """
-IMPORTANT: This business has not completed their profile yet. Before helping with anything else,
-you must first collect this information through natural conversation, ONE question at a time —
-never ask more than one thing per message.
+        if msg["role"] == "assistant" and isinstance(content, list):
+            tool_ids = {b["id"] for b in content if isinstance(b, dict) and b.get("type") == "tool_use"}
+            if tool_ids:
+                nxt = messages[i + 1] if i + 1 < n else None
+                answered = False
+                if nxt and nxt["role"] == "user" and isinstance(nxt["content"], list):
+                    result_ids = {
+                        b.get("tool_use_id")
+                        for b in nxt["content"]
+                        if isinstance(b, dict) and b.get("type") == "tool_result"
+                    }
+                    answered = tool_ids <= result_ids
+                if not answered:
+                    i += 1
+                    continue
+                cleaned.append(msg)
+                cleaned.append(nxt)
+                i += 2
+                continue
 
-If this is the user's first message in the conversation, open with something direct like:
-"Welcome to DocDuty! Let's set up your business profile so I can give you accurate, personalized
-compliance guidance." Then immediately ask the first question below. Do NOT ask whether they
-already have a profile — you already know they don't, that's why this instruction exists.
+        # A user turn made only of tool_results, reached here, has no kept tool_use before it
+        if (
+            msg["role"] == "user"
+            and isinstance(content, list)
+            and content
+            and all(isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
+        ):
+            i += 1
+            continue
 
-1. Legal structure (must be exactly one of: "Business Name (Sole Proprietorship)", "Business Name (Partnership)",
-   "Private Limited Company (Ltd)", "Public Limited Company (PLC)", "Limited Liability Partnership (LLP)",
-   "Limited Partnership (LP)", "Incorporated Trustees", "Not yet registered")
-2. What the business actually does, in their own words (open-ended, don't force it into categories)
-3. Which Nigerian state the business primarily operates in
-4. Staff size (exactly one of: "Just me", "2-5", "6-20", "21-50", "50+")
-5. Office status (exactly one of: "Rented", "Owned", "Home-based", "No physical office")
-6. Approximate monthly revenue range (exactly one of: "Under ₦500,000", "₦500,000 - ₦2,000,000",
-   "₦2,000,000 - ₦10,000,000", "₦10,000,000 - ₦25,000,000", "Above ₦25,000,000") — explain briefly
-   this helps DocDuty flag when they may need to register for VAT
-7. If they have paid staff, their typical salary range (exactly one of: "No paid staff",
-   "Under ₦100,000/month per staff", "₦100,000 - ₦300,000/month per staff",
-   "₦300,000 - ₦800,000/month per staff", "Above ₦800,000/month per staff") — explain this helps
-   with PAYE tax withholding guidance
-
-Call save_business_profile after EACH individual answer, don't wait to collect everything first.
-Once all seven are collected, call save_business_profile one final time with onboarding_complete: true,
-then let them know their profile is set up and ask what they'd like help with today.
-"""
+        cleaned.append(msg)
+        i += 1
+    return cleaned
 
 
 def load_session_messages(session_id: int) -> list:
@@ -82,22 +73,8 @@ def load_session_messages(session_id: int) -> list:
     rows = cur.fetchall()
     cur.close()
     conn.close()
-
     messages = [{"role": row["role"], "content": row["content"]} for row in rows]
-
-    # Defensive repair: if the conversation was interrupted mid-tool-call (e.g. a
-    # crash between saving the assistant's tool_use and saving the tool_result),
-    # the last assistant message may contain an unresolved tool_use with no
-    # matching result. Claude's API rejects that outright, so we trim it off
-    # rather than let the whole conversation become permanently unusable.
-    if messages and messages[-1]["role"] == "assistant":
-        last_content = messages[-1]["content"]
-        if isinstance(last_content, list) and any(
-            isinstance(b, dict) and b.get("type") == "tool_use" for b in last_content
-        ):
-            messages = messages[:-1]
-
-    return messages
+    return repair_history(messages)
 
 
 def save_message(session_id: int, role: str, content) -> None:
@@ -128,6 +105,44 @@ def create_session(account_id: int, user_id: int, first_message: str) -> int:
     return session_id
 
 
+def run_tools(content_blocks, account: dict, user_id: int):
+    """
+    Executes every tool_use block. A tool that raises is reported back to the model as an
+    error result, so every tool_use always gets a matching tool_result.
+    """
+    results = []
+    options = None
+    for block in content_blocks:
+        if block.type != "tool_use":
+            continue
+        if block.name == "present_choice_options":
+            options = block.input.get("options")
+        try:
+            result = execute_tool(block.name, block.input, account, user_id)
+        except Exception as e:
+            print(f"Tool '{block.name}' failed: {e}")
+            result = {"error": f"Tool '{block.name}' failed: {e}"}
+        results.append({
+            "type": "tool_result",
+            "tool_use_id": block.id,
+            "content": json.dumps(result, default=str),
+        })
+    return results, options
+
+
+def call_claude(client: Anthropic, system_prompt: str, messages: list):
+    try:
+        return client.messages.create(
+            model=MODEL,
+            max_tokens=1024,
+            system=system_prompt,
+            tools=TOOLS,
+            messages=messages,
+        )
+    except APIConnectionError:
+        raise HTTPException(status_code=503, detail="Couldn't reach the AI service. Please retry.")
+
+
 class ChatInput(BaseModel):
     message: str
     session_id: int | None = None
@@ -141,8 +156,11 @@ def chat(input: ChatInput, user_id: int = Depends(get_current_user_id)):
     if not api_key:
         raise HTTPException(status_code=500, detail="AI assistant is not configured")
 
+    enforce_chat_limit(account["id"], account)
+
     if account and not account.get("onboarding_completed"):
-        system_prompt = BASE_SYSTEM_PROMPT + ONBOARDING_ADDENDUM
+        known_context = f"\nAccount context already on file: business_name='{account.get('business_name')}', account_type='{account.get('account_type')}'.\n"
+        system_prompt = BASE_SYSTEM_PROMPT + ONBOARDING_ADDENDUM + known_context
     else:
         system_prompt = BASE_SYSTEM_PROMPT
 
@@ -166,47 +184,28 @@ def chat(input: ChatInput, user_id: int = Depends(get_current_user_id)):
     messages.append({"role": "user", "content": input.message})
 
     client = Anthropic(api_key=api_key)
+    response = call_claude(client, system_prompt, messages)
 
-    response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=1024,
-        system=system_prompt,
-        tools=TOOLS,
-        messages=messages,
-    )
+    pending_options = None
 
     while response.stop_reason == "tool_use":
-        assistant_content = [block.model_dump() for block in response.content]
-        save_message(session_id, "assistant", assistant_content)
-        messages.append({"role": "assistant", "content": response.content})
+        # Run the tools first, then persist the assistant turn and its results together
+        tool_results, options = run_tools(response.content, account, user_id)
+        if options:
+            pending_options = options
 
-        tool_results = []
-        for block in response.content:
-            if block.type == "tool_use":
-                result = execute_tool(block.name, block.input, account, user_id)
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": json.dumps(result, default=str),
-                })
-
+        save_message(session_id, "assistant", [block.model_dump() for block in response.content])
         save_message(session_id, "user", tool_results)
+
+        messages.append({"role": "assistant", "content": response.content})
         messages.append({"role": "user", "content": tool_results})
 
-        response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=1024,
-            system=system_prompt,
-            tools=TOOLS,
-            messages=messages,
-        )
+        response = call_claude(client, system_prompt, messages)
 
-    final_content = [block.model_dump() for block in response.content]
-    save_message(session_id, "assistant", final_content)
-
+    save_message(session_id, "assistant", [block.model_dump() for block in response.content])
     final_text = "".join(block.text for block in response.content if block.type == "text")
 
-    return {"reply": final_text, "session_id": session_id}
+    return {"reply": final_text, "session_id": session_id, "options": pending_options}
 
 
 @router.get("/chat/sessions")

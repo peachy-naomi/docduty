@@ -29,9 +29,14 @@ export default function DocumentsPage() {
     <main className="max-w-4xl px-8 py-8">
       <div className="flex items-center justify-between mb-6">
         <h1 className="font-display text-2xl font-bold">Documents</h1>
-        <a href="/documents/new/invoice" className="btn-accent text-sm">
-          + New Invoice
-        </a>
+        <div className="flex gap-2">
+          <a href="/documents/drafts" className="text-sm font-medium px-4 py-2 rounded-xl" style={{ background: 'var(--surface-subtle)', border: '1px solid var(--surface-border)' }}>
+            Pending Drafts
+          </a>
+          <a href="/documents/new/invoice" className="btn-accent text-sm">
+            + New Invoice
+          </a>
+        </div>
       </div>
 
       <div className="card overflow-x-auto">

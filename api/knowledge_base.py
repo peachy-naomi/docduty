@@ -1,4 +1,6 @@
 import re
+import numpy as np
+from pgvector.psycopg2 import register_vector
 from database import get_connection
 
 # Loaded lazily, on first actual use — NOT at import time. This means a

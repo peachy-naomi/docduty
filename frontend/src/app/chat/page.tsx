@@ -5,11 +5,12 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useQueryClient } from '@tanstack/react-query';
-import { sendChatMessage, getChatSession, getToken } from '@/lib/api';
+import { sendChatMessage, getChatSession, getToken, startSubscription } from '@/lib/api';
+import { useRouter as useRouterAlias } from 'next/navigation';
 import ChatSidebar from '@/components/ChatSidebar';
 import ReactMarkdown from 'react-markdown';
 
-type Message = { role: 'user' | 'assistant'; content: string };
+type Message = { role: 'user' | 'assistant'; content: string; options?: string[] };
 
 export default function ChatPage() {
   return (
@@ -29,6 +30,7 @@ function ChatContent() {
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [lastFailedMessage, setLastFailedMessage] = useState('');
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -67,27 +69,37 @@ function ChatContent() {
     router.push('/chat');
   }
 
-  async function handleSend(e: React.FormEvent) {
+  async function handleSend(e: React.FormEvent, retryMessage?: string) {
     e.preventDefault();
-    if (!input.trim() || loading) return;
+    const userMessage = retryMessage || input.trim();
+    if (!userMessage || loading) return;
 
-    const userMessage = input.trim();
-    setInput('');
+    if (!retryMessage) {
+      setInput('');
+      setMessages((prev) => [...prev, { role: 'user', content: userMessage }]);
+    }
     setError('');
-    setMessages((prev) => [...prev, { role: 'user', content: userMessage }]);
     setLoading(true);
 
     try {
       const data = await sendChatMessage(userMessage, sessionId);
-      setMessages((prev) => [...prev, { role: 'assistant', content: data.reply }]);
+      setMessages((prev) => [...prev, { role: 'assistant', content: data.reply, options: data.options }]);
       if (!sessionId) {
         setSessionId(data.session_id);
         queryClient.invalidateQueries({ queryKey: ['chat-sessions'] });
       }
+      setLastFailedMessage('');
     } catch (err: any) {
       setError(err.response?.data?.detail || 'Something went wrong. Please try again.');
+      setLastFailedMessage(userMessage);
     } finally {
       setLoading(false);
+    }
+ }
+
+  function handleRetry() {
+    if (lastFailedMessage) {
+      handleSend({ preventDefault: () => {} } as React.FormEvent, lastFailedMessage);
     }
   }
 
@@ -185,23 +197,45 @@ function ChatContent() {
                     transition={{ duration: 0.2 }}
                     className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
                   >
-                   <div
-                      className={`max-w-[80%] px-4 py-2.5 text-sm ${
-                        msg.role === 'user' ? 'chat-bubble-user whitespace-pre-wrap' : 'chat-bubble-ai chat-markdown'
-                      }`}
-                    >
-                      {msg.role === 'assistant' ? (
-                        <ReactMarkdown
-                          components={{
-                            a: (props) => (
-                              <a {...props} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--primary)', textDecoration: 'underline' }} />
-                            ),
-                          }}
-                        >
-                          {msg.content}
-                        </ReactMarkdown>
-                      ) : (
-                        msg.content
+                    <div className="max-w-[80%]">
+                      <div
+                        className={`px-4 py-2.5 text-sm ${
+                          msg.role === 'user' ? 'chat-bubble-user whitespace-pre-wrap' : 'chat-bubble-ai chat-markdown'
+                        }`}
+                      >
+                        {msg.role === 'assistant' ? (
+                          <ReactMarkdown
+                            components={{
+                              a: (props) => (
+                                <a {...props} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--primary)', textDecoration: 'underline' }} />
+                              ),
+                            }}
+                          >
+                            {msg.content}
+                          </ReactMarkdown>
+                        ) : (
+                          msg.content
+                        )}
+                      </div>
+                      {msg.role === 'assistant' && msg.options && msg.options.length > 0 && i === messages.length - 1 && (
+                        <div className="flex flex-wrap gap-2 mt-2">
+                          {msg.options.map((opt) => (
+                            <button
+                              key={opt}
+                              onClick={() => {
+                                setInput(opt);
+                                setTimeout(() => {
+                                  const form = document.querySelector('form');
+                                  form?.requestSubmit();
+                                }, 0);
+                              }}
+                              className="text-xs font-medium px-3 py-1.5 rounded-full"
+                              style={{ background: 'var(--surface-subtle)', border: '1px solid var(--primary)', color: 'var(--primary)' }}
+                            >
+                              {opt}
+                            </button>
+                          ))}
+                        </div>
                       )}
                     </div>
                   </motion.div>
@@ -223,24 +257,64 @@ function ChatContent() {
           </div>
 
           <div className="pb-4 w-full">
-            {error && (
-              <p className="text-sm px-3 py-2 rounded-lg mb-3" style={{ color: 'var(--danger)', background: 'rgba(220,38,38,0.08)' }}>
-                {error}
-              </p>
+             {error && error.includes('Free tier limit') && (
+              <div className="flex items-center justify-between gap-3 text-sm px-3 py-2 rounded-lg mb-3" style={{ color: 'var(--warning)', background: 'rgba(217,119,6,0.08)' }}>
+                <span>{error}</span>
+                <button
+                  onClick={async () => {
+                    const data = await startSubscription();
+                    window.location.href = data.payment_url;
+                  }}
+                  className="shrink-0 text-xs font-semibold px-3 py-1.5 rounded-lg"
+                  style={{ background: 'var(--warning)', color: 'white' }}
+                >
+                  Upgrade
+                </button>
+              </div>
             )}
-            <form onSubmit={handleSend} className="flex gap-2">
-              <input
-                type="text"
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                placeholder="Ask DocDuty anything..."
-                className="input-field"
-                disabled={loading}
-              />
-              <button type="submit" disabled={loading || !input.trim()} className="btn-accent shrink-0">
-                Send
-              </button>
-            </form>
+
+            {error && !error.includes('Free tier limit') && (
+              <div className="flex items-center justify-between gap-3 text-sm px-3 py-2 rounded-lg mb-3" style={{ color: 'var(--danger)', background: 'rgba(220,38,38,0.08)' }}>
+                <span>{error}</span>
+                <button
+                  onClick={handleRetry}
+                  aria-label="Retry"
+                  className="shrink-0 w-7 h-7 rounded-full flex items-center justify-center"
+                  style={{ background: 'rgba(220,38,38,0.15)' }}
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="var(--danger)" strokeWidth="2" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M1 4v6h6M23 20v-6h-6" />
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M20.49 9A9 9 0 005.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 013.51 15" />
+                  </svg>
+                </button>
+              </div>
+            )}
+
+            <form onSubmit={handleSend} className="flex gap-2 items-end">
+             <textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSend(e as any);
+                }
+             }}
+             placeholder="Ask DocDuty anything..."
+             className="input-field resize-none"
+             style={{ maxHeight: '150px', minHeight: '46px' }}
+             rows={1}
+             onInput={(e) => {
+               const el = e.currentTarget;
+               el.style.height = 'auto';
+               el.style.height = Math.min(el.scrollHeight, 150) + 'px';
+             }}
+             disabled={loading}
+           />
+           <button type="submit" disabled={loading || !input.trim()} className="btn-accent shrink-0">
+            Send
+           </button>
+         </form>
           </div>
         </div>
       </main>

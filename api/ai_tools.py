@@ -81,10 +81,8 @@ TOOLS = [
                     "type": "string",
                     "enum": ["Under ₦500,000", "₦500,000 - ₦2,000,000", "₦2,000,000 - ₦10,000,000", "₦10,000,000 - ₦25,000,000", "Above ₦25,000,000"],
                 },
-                "staff_salary_range": {
-                    "type": "string",
-                    "enum": ["No paid staff", "Under ₦100,000/month per staff", "₦100,000 - ₦300,000/month per staff", "₦300,000 - ₦800,000/month per staff", "Above ₦800,000/month per staff"],
-                },
+                "staff_salary_min": {"type": "integer", "description": "Lowest monthly salary paid to any staff member, in Naira. Use 0 if no paid staff."},
+                "staff_salary_max": {"type": "integer", "description": "Highest monthly salary paid to any staff member, in Naira. Use 0 if no paid staff."},
                 "onboarding_complete": {"type": "boolean", "description": "Set to true once all profile questions have been answered"},
             },
         },
@@ -118,6 +116,32 @@ TOOLS = [
                 "document_kind": {"type": "string", "enum": ["invoice", "contract"], "description": "Whether this is an invoice/receipt/quotation, or a contract/policy"},
             },
             "required": ["document_id", "document_kind"],
+        },
+    },
+
+    {
+        "name": "present_choice_options",
+        "description": "Presents the user with a small set of tappable choices for a closed-ended question, instead of them having to type an exact answer. Use this for any question with a fixed set of valid options.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string"},
+                "options": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["question", "options"],
+        },
+    },
+    {
+        "name": "draft_custom_document",
+        "description": "Drafts a fully custom legal document (contract, employment letter, agreement) tailored to this specific business, when no existing template fits their exact need. This creates a DRAFT that the business owner must review and approve before it becomes final — never tell the user the document is ready to use until they've confirmed the draft.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "client_id": {"type": "integer"},
+                "document_title": {"type": "string", "description": "e.g. 'Employment Offer Letter for Marketing Manager'"},
+                "drafted_content": {"type": "string", "description": "The full drafted document text"},
+            },
+            "required": ["client_id", "document_title", "drafted_content"],
         },
     },
 

@@ -296,3 +296,18 @@ export async function googleAuth(credential: string, accountType?: string, busin
   });
   return res.data;
 }
+
+export async function getPendingDrafts() {
+  const res = await api.get('/contracts/drafts');
+  return res.data;
+}
+
+export async function approveDraft(id: number, editedContent?: string) {
+  const res = await api.put(`/contracts/${id}/approve`, { edited_content: editedContent });
+  return res.data;
+}
+
+export async function rejectDraft(id: number) {
+  const res = await api.delete(`/contracts/${id}/reject`);
+  return res.data;
+}
